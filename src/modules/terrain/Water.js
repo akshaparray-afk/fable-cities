@@ -18,6 +18,9 @@
 import * as THREE from 'three';
 
 const _reflectorPlane = new THREE.Plane();
+const _reflFrustum = new THREE.Frustum();
+const _reflViewProj = new THREE.Matrix4();
+const _reflBox = new THREE.Box3();
 const _normal = new THREE.Vector3();
 const _reflectorWorldPosition = new THREE.Vector3();
 const _cameraWorldPosition = new THREE.Vector3();
@@ -66,6 +69,19 @@ export class Water {
     const size = new THREE.Vector2();
     renderer.getDrawingBufferSize(size);
     this.reflectionScale = reflectionScale;
+    /**
+     * The reflection is a second full submission of everything on layer 3 — measured at ~404 of
+     * the frame's ~2100 draw calls and 1.43 M triangles, about a fifth of the frame, and it ran
+     * unconditionally. Two gates cut that without touching another module:
+     *   reflectionInterval — re-render the target every Nth frame and reuse it in between. The
+     *     whole function is skipped on a reuse frame so the target and its textureMatrix stay
+     *     consistent; the reflection is then one frame stale, which is invisible on a half-res,
+     *     normal-distorted surface but would swim if the matrix advanced without the content.
+     *   visibility — if no water quad is inside the main camera frustum, nothing samples the
+     *     target at all, so the pass is pure waste. This one is exact, not an approximation.
+     */
+    this.reflectionInterval = 2;
+    this._reflectionFrame = 0;
     this.reflectionRT = new THREE.WebGLRenderTarget(Math.max(256, Math.floor(size.x * reflectionScale)), Math.max(256, Math.floor(size.y * reflectionScale)), {
       type: THREE.HalfFloatType, depthBuffer: true, stencilBuffer: false, samples: 0,
     });
@@ -306,8 +322,42 @@ reflectedLight.indirectSpecular += uNightSheen * (0.16 + 0.84 * pow(1.0 - gWNdot
   }
 
   /** Render the planar reflection into the render target. Call before the main render. */
+  /**
+   * True when any water quad intersects the main camera frustum. The quads are the same flat
+   * [x0,z0,x1,z1] list the surface mesh is built from, so this is exact rather than an estimate;
+   * the box gets a little vertical slack for waves and the shoreline band.
+   * Returns true when the quad list is missing, so an unknown never culls a visible reflection.
+   */
+  _waterInView(camera) {
+    const quads = this.waterQuads;
+    if (!quads || !quads.length) return true;
+    _reflViewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    _reflFrustum.setFromProjectionMatrix(_reflViewProj);
+    const y0 = this.waterLevel - 2, y1 = this.waterLevel + 6;
+    for (let i = 0; i < quads.length; i++) {
+      const q = quads[i];
+      _reflBox.min.set(Math.min(q[0], q[2]), y0, Math.min(q[1], q[3]));
+      _reflBox.max.set(Math.max(q[0], q[2]), y1, Math.max(q[1], q[3]));
+      if (_reflFrustum.intersectsBox(_reflBox)) return true;
+    }
+    return false;
+  }
+
   renderReflection(renderer, scene, camera) {
     if (!this.reflectionsEnabled) { this.uniforms.uReflectionStrength.value = 0; return; }
+
+    // Nothing samples the target when no water is on screen, so the whole pass is waste.
+    if (!this._waterInView(camera)) {
+      this.uniforms.uReflectionStrength.value = 0;
+      this._reflectionFrame = 0; // render on the first frame water comes back into view
+      return;
+    }
+    // Reuse the last target in between. Never reuse one that was never rendered (strength is only
+    // raised at the end of a successful pass), or water would appear with no reflection for a frame.
+    if (this.reflectionInterval > 1
+      && this.uniforms.uReflectionStrength.value > 0
+      && (this._reflectionFrame++ % this.reflectionInterval) !== 0) return;
+
     const size = renderer.getDrawingBufferSize(_sizeVec);
     const w = Math.max(256, Math.floor(size.x * this.reflectionScale)), h = Math.max(256, Math.floor(size.y * this.reflectionScale));
     if (this.reflectionRT.width !== w || this.reflectionRT.height !== h) this.reflectionRT.setSize(w, h);
