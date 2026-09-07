@@ -306,6 +306,21 @@ export class Engine {
     this.gtaoPass.render = (...args) => {
       const had = cam.layers.isEnabled(noAoLayer);
       cam.layers.disable(noAoLayer);
+      /**
+       * The blend below fades AO to nothing by `aoFade.y` metres, so geometry past that distance
+       * cannot change a single pixel of the result — yet the normal/depth pre-pass was submitting
+       * the scene all the way to `camera.far` (15 km, out to the horizon ring). Pull the far plane
+       * in to the fade distance for the duration of the pass and that geometry frustum-culls out
+       * of this second full-scene render.
+       *
+       * The restore deliberately happens at the very END of this function, after the blend: the
+       * blend samples the depth texture this pass just wrote and reads `camera.far` to linearise
+       * it, so the two have to agree. Restoring early would linearise a 1.2 km depth buffer
+       * against a 15 km range and put the AO in the wrong place.
+       */
+      const farWas = cam.far;
+      const aoFar = Math.max(cam.near + 1, this.aoFade.y);
+      if (aoFar < farWas) { cam.far = aoFar; cam.updateProjectionMatrix(); }
       // The GTAO normal/depth pre-pass is a second renderer.render() of the whole scene, and
       // WebGLShadowMap re-renders every cascade on every render() — but it picks the depth
       // material from `scene.overrideMaterial` when one is set. So the cascades were being
@@ -331,6 +346,7 @@ export class Engine {
       renderer.setRenderTarget(this.gtaoPass.renderToScreen ? null : readBuffer);
       this._aoBlendQuad.render(renderer);
       renderer.autoClear = autoClear;
+      if (cam.far !== farWas) { cam.far = farWas; cam.updateProjectionMatrix(); }
     };
     cam.layers.enable(this.LAYER_NO_AO);
     // Judges' verdict on r4: "objects do not sit in the scene". AO is the only contact cue the
