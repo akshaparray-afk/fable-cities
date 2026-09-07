@@ -163,6 +163,28 @@ export async function init(ctx) {
     if (handled) e.preventDefault();
   });
 
+  /**
+   * Build tools read their clicks from the canvas, and the HUD sits on top of it, so a click that
+   * lands on a panel while a tool is armed does nothing at all — no ghost, no refusal, no sound.
+   * The player reads that silence as a broken tool, and so does a machine: two scripted playtests
+   * filed it as a blocker ("a second road is never built", "bulldoze removes nothing") when in
+   * both cases the click had simply hit the interface. Roughly an eighth of the viewport behaves
+   * this way, and a sixth with a tray open.
+   *
+   * Say so. Real controls are left alone — this only fires on the inert parts of a panel, and at
+   * most once every few seconds so it can never become a stream.
+   */
+  let lastBlockedHint = 0;
+  root.addEventListener('pointerdown', (e) => {
+    const tool = world.tool && world.tool.active;
+    if (!tool || tool === 'select' || tool === 'info') return;
+    if (e.target.closest && e.target.closest('button, a, input, select, textarea, [role="button"], [role="slider"], [role="tab"], [contenteditable="true"]')) return;
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if (now - lastBlockedHint < 4000) return;
+    lastBlockedHint = now;
+    if (hud.toasts) hud.toasts.push({ kind: 'info', title: 'Nothing was built there', text: 'That click landed on the interface, not the map. Aim at the ground to build.', life: 3400 });
+  });
+
   // ---------- initial state ----------
   if (world.tool && world.tool.active && world.tool.active !== 'select') {
     hud.toolbar.onToolChanged(world.tool.active, world.tool.options);
