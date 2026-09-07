@@ -6,6 +6,13 @@ import { clamp, damp, dampAngle, DEG2RAD } from '../shared/math.js';
  *  - WASD / arrows: pan (speed scales with zoom)   - Q/E: rotate   - R/F: tilt
  *  - Middle drag (or Alt+left drag): grab-the-ground pan    - Right drag: rotate/tilt
  *  - Wheel: zoom towards cursor                              - Home: reset
+ *
+ * Touch (a phone has neither WASD nor a middle button, so without this the camera cannot move
+ * at all — measured: a one-finger drag moved the camera 0.00 m):
+ *  - One finger: grab-the-ground pan, but only while no build tool is armed, so it never fights
+ *    a tool that reads the same drag ("drag across the ground to lay it").
+ *  - Two fingers: pinch to zoom, twist to rotate, slide to pan. Always available, so the camera
+ *    is reachable even with a tool armed.
  */
 export class CameraController {
   constructor(camera, input, world, canvas) {
@@ -29,6 +36,8 @@ export class CameraController {
     this.panSpeed = 1.1; // fraction of distance per second
     this.rotateSpeed = 0.0045;
     this.zoomSpeed = 0.0011;
+    this.pinchZoomSpeed = 0.007; // per px of finger separation
+    this.touchRotateSpeed = 1.0; // twist is already radians
     this.minHeightAboveGround = 1.8;
 
     this._raycaster = new THREE.Raycaster();
@@ -66,6 +75,25 @@ export class CameraController {
     return this.world.terrain.raycast(this._raycaster.ray, out);
   }
 
+  /**
+   * Pan by a screen-space delta in pixels. Two-finger drag has no single pointer to ray-cast
+   * through, so convert pixels to metres at the target plane instead of grabbing the ground.
+   * Vertical pixels cover more ground the flatter the camera sits, hence the sin(pitch) term.
+   */
+  _panByPixels(dx, dy, d) {
+    const h = Math.max(1, this.canvas ? this.canvas.clientHeight : 1000);
+    const mpp = (2 * this.distance * Math.tan((this.camera.fov * DEG2RAD) / 2)) / h;
+    const yaw = this.yaw;
+    this._forward.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+    this._right.set(Math.cos(yaw), 0, -Math.sin(yaw));
+    const mx = -dx * mpp;
+    const mz = dy * mpp / clamp(Math.sin(this.pitch), 0.35, 1);
+    d.target.addScaledVector(this._right, mx);
+    d.target.addScaledVector(this._forward, mz);
+    this.target.addScaledVector(this._right, mx);   // immediate, for 1:1 feel
+    this.target.addScaledVector(this._forward, mz);
+  }
+
   update(dt) {
     const input = this.input;
     const d = this.desired;
@@ -96,10 +124,15 @@ export class CameraController {
       if (input.isDown('f') || input.isHeld('g')) d.pitch -= 1.0 * dt;
       if (input.justPressed('Home')) this.setView({ target: { x: 0, y: 0, z: 0 }, distance: 450, yaw: 30 * DEG2RAD, pitch: 42 * DEG2RAD });
 
-      // --- mouse ---
+      // --- mouse / touch ---
       const drag = input.drag;
-      const panDrag = drag && (drag.button === 1 || (drag.button === 0 && input.alt));
-      const rotDrag = drag && drag.button === 2;
+      // A build tool reads the same one-finger drag it would use to draw, so one-finger pan is
+      // only offered when nothing is armed. Two fingers always reach the camera (below).
+      const tool = this.world.tool && this.world.tool.active;
+      const toolArmed = !!tool && tool !== 'select';
+      const touchPan = !!drag && drag.pointerType === 'touch' && input.touchCount === 1 && !toolArmed;
+      const panDrag = drag && (drag.button === 1 || (drag.button === 0 && input.alt) || touchPan);
+      const rotDrag = drag && drag.button === 2 && drag.pointerType !== 'touch';
       if (panDrag) {
         if (!this._panning) {
           this._panning = true;
@@ -123,6 +156,20 @@ export class CameraController {
       if (rotDrag) {
         d.yaw -= drag.dx * this.rotateSpeed;
         d.pitch += drag.dy * this.rotateSpeed;
+      }
+
+      // --- two fingers: pinch zooms, twist rotates, a parallel slide pans ---
+      if (input.touchCount === 2) {
+        const spread = Math.abs(input.pinchDelta);
+        const twist = Math.abs(input.twistDelta);
+        const slide = Math.hypot(input.twoFingerDx, input.twoFingerDy);
+        if (spread > 0.5) {
+          d.distance = clamp(d.distance * Math.exp(-input.pinchDelta * this.pinchZoomSpeed), this.minDistance, this.maxDistance);
+        }
+        if (twist > 0.004) d.yaw -= input.twistDelta * this.touchRotateSpeed;
+        // Only treat the midpoint as a pan when the fingers moved together rather than apart,
+        // otherwise every pinch would drag the city as well.
+        if (slide > spread && slide > 0.5) this._panByPixels(input.twoFingerDx, input.twoFingerDy, d);
       }
 
       // --- zoom towards cursor ---

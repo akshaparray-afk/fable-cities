@@ -17,6 +17,16 @@ export class Input {
     this.pointerOverUI = false;
     this.pointerInside = true;
     this.drag = null; // { button, startX, startY, x, y, dx, dy, totalDx, totalDy, overUIAtDown, target }
+    /** Live pointers by pointerId — the only way to see a second finger, since `drag` is single. */
+    this.pointers = new Map(); // id -> { x, y, type }
+    /** Touch contacts down this frame. 1 = drag-to-pan, 2 = pinch/twist. */
+    this.touchCount = 0;
+    /** Two-finger gesture deltas, accumulated per frame and cleared in endFrame(). */
+    this.pinchDelta = 0;  // px change in the distance between the two fingers
+    this.twistDelta = 0;  // radians change in the angle between them
+    this.twoFingerDx = 0; // px the midpoint moved horizontally (two-finger pan)
+    this.twoFingerDy = 0; // px the midpoint moved vertically
+    this._gesture = null; // { dist, angle, midX, midY } from the previous move
     /** Keys claimed by a module — CameraController and other consumers skip them.
      *  Call input.claimKey('r') every frame while your tool wants the key; a claim stays live
      *  until the frame after the last call, so it survives the camera update at the top of the
@@ -53,7 +63,13 @@ export class Input {
     window.addEventListener('blur', () => this.keys.clear());
     window.addEventListener('pointermove', (e) => {
       this.pointerOverUI = e.target !== c;
-      this._setPointer(e.clientX, e.clientY);
+      if (this.pointers.has(e.pointerId)) {
+        const p = this.pointers.get(e.pointerId);
+        p.x = e.clientX; p.y = e.clientY;
+        this._updateGesture();
+      }
+      // With two fingers down the "pointer" would jitter between them; keep the ray on the first.
+      if (this.touchCount < 2) this._setPointer(e.clientX, e.clientY);
       if (this.drag) {
         this.drag.dx += e.clientX - this.drag.x;
         this.drag.dy += e.clientY - this.drag.y;
@@ -69,12 +85,20 @@ export class Input {
       this._setPointer(e.clientX, e.clientY);
       this.buttons = e.buttons;
       this.justPressedButtons.add(e.button);
-      this.drag = { button: e.button, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, dx: 0, dy: 0, totalDx: 0, totalDy: 0, active: false, startGround: this.ground.clone(), startGroundValid: this.groundValid, target: e.target, overUIAtDown: false, synthetic: !!e.__synthetic };
+      this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+      this._refreshTouchCount();
+      this.drag = { button: e.button, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, dx: 0, dy: 0, totalDx: 0, totalDy: 0, active: false, startGround: this.ground.clone(), startGroundValid: this.groundValid, target: e.target, overUIAtDown: false, synthetic: !!e.__synthetic, pointerType: e.pointerType || 'mouse' };
       try { c.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    });
+    window.addEventListener('pointercancel', (e) => {
+      this.pointers.delete(e.pointerId);
+      this._refreshTouchCount();
     });
     window.addEventListener('pointerup', (e) => {
       this.buttons = e.buttons;
       this.justReleasedButtons.add(e.button);
+      this.pointers.delete(e.pointerId);
+      this._refreshTouchCount();
       if (this.drag && this.drag.button === e.button) {
         this.drag.ended = true;
         this._endedDrag = this.drag;
@@ -97,6 +121,42 @@ export class Input {
     this.ndc.set(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
   }
 
+  /** Touch contacts currently down. Mouse and pen never count towards a pinch. */
+  _refreshTouchCount() {
+    let n = 0;
+    for (const p of this.pointers.values()) if (p.type === 'touch') n++;
+    this.touchCount = n;
+    if (n !== 2) this._gesture = null;
+  }
+
+  /**
+   * Accumulate this frame's two-finger pinch (spread), twist (rotation) and vertical drag.
+   * Deltas are relative to the previous move event, so they stay correct however fast the
+   * fingers travel, and are consumed and cleared once per frame by the camera.
+   */
+  _updateGesture() {
+    if (this.touchCount !== 2) return;
+    const t = [];
+    for (const p of this.pointers.values()) if (p.type === 'touch') t.push(p);
+    if (t.length !== 2) return;
+    const dx = t[1].x - t[0].x, dy = t[1].y - t[0].y;
+    const dist = Math.hypot(dx, dy);
+    const angle = Math.atan2(dy, dx);
+    const midX = (t[0].x + t[1].x) / 2;
+    const midY = (t[0].y + t[1].y) / 2;
+    if (this._gesture) {
+      this.pinchDelta += dist - this._gesture.dist;
+      // shortest signed angular difference, so the ±π wrap never spins the camera
+      let da = angle - this._gesture.angle;
+      while (da > Math.PI) da -= 2 * Math.PI;
+      while (da < -Math.PI) da += 2 * Math.PI;
+      this.twistDelta += da;
+      this.twoFingerDx += midX - this._gesture.midX;
+      this.twoFingerDy += midY - this._gesture.midY;
+    }
+    this._gesture = { dist, angle, midX, midY };
+  }
+
   /** Call at the start of every frame. */
   beginFrame() {
     this._frame++;
@@ -112,6 +172,10 @@ export class Input {
     this.justReleasedKeys.clear();
     this.justPressedButtons.clear();
     this.justReleasedButtons.clear();
+    this.pinchDelta = 0;
+    this.twistDelta = 0;
+    this.twoFingerDx = 0;
+    this.twoFingerDy = 0;
     if (this.drag) { this.drag.dx = 0; this.drag.dy = 0; }
   }
 
