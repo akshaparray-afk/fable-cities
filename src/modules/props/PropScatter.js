@@ -26,6 +26,20 @@ const FOOTPRINT = {
 const LAMP_MARGIN = 3.0;            // roads keeps its lamps this far from a trimmed segment end
 /** Widens every luminaire's PointLight cutoff — see addSource() for why, and why it is free. */
 const LIGHT_RANGE_SCALE = 3;
+/**
+ * Scales every luminaire's PointLight intensity. The authored values (16 cd for a road lamp,
+ * 10 for a classic one) are far below what a luminaire 15 m above the carriageway needs to put
+ * light ON that carriageway — a real street lamp is a four-figure candela figure — so with the
+ * cutoff widened the lamps still lit almost nothing. Swept at a night street view against the
+ * same frame at ×1: ×5 moves 0.6% of pixels, ×10 5.8%, ×20 11.7%, ×40 17.0%, with no clipping
+ * at any step. ×20 is where the pavement, kerb and street trees read as lit without the scene
+ * tipping into daylight.
+ *
+ * This scales ONLY the real light: `luminaire()` draws the lamp's halo from `halo` and its ground
+ * pool from `dia`, and neither reads `intensity`, so the faked lighting is untouched and the four
+ * pooled lights still blend into the many lamps that never get one.
+ */
+const LIGHT_INTENSITY_SCALE = 20;
 const CAR_COLORS = [
   0xf2f3f4, 0xe8e9ea, 0xd8dade, 0xb9bdc0, 0x9aa0a5, 0x6d7377, 0x2f3438, 0x1b1e21,
   0x2d4a72, 0x38607f, 0x6b2f33, 0x8f3b2c, 0x35513c, 0x7a6a4f, 0xc9a227, 0x1f4a3c,
@@ -114,7 +128,11 @@ export class PropScatter {
    * noise and if anything faster.
    */
   addSource(x, y, z, color, intensity, range) {
-    this.sources.push({ x, y, z, color, intensity, range: range * LIGHT_RANGE_SCALE });
+    this.sources.push({
+      x, y, z, color,
+      intensity: intensity * LIGHT_INTENSITY_SCALE,
+      range: range * LIGHT_RANGE_SCALE,
+    });
   }
 
   /* ------------------------------------------------------------- helpers */
