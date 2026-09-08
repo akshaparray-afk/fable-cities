@@ -157,9 +157,59 @@ async function boot() {
   if (config.debug) console.log('[main] ready', debug.stats());
 }
 
+/** The first road a new player draws. 140 m is what tools/playtest.mjs asks the game for. */
+const START_RUN = 140;
+const START_DIRS = [0, 45, 90, 135];
+
 /**
- * Pick where a brand-new city opens: score a coarse grid on how much of the surrounding 200 m is dry
- * and gently sloped, and take the best. Deterministic — same seed, same starting view.
+ * Can a road actually be built from A to B? This mirrors `evaluate()` in
+ * src/modules/tools/roadtool.js — same ~2.2 m sampling, and the same SUSTAINED gradient over a
+ * ~10 m window rather than a per-sample slope, because conformPath grades local bumps away.
+ * Keep the two in step: if MAX_SLOPE or the sampling there changes, change it here.
+ */
+function roadCorridorOk(world, ax, az, bx, bz) {
+  const t = world.terrain;
+  const MAX_SLOPE = 0.25;
+  const len = Math.hypot(bx - ax, bz - az);
+  if (len < 6) return false;
+  const n = Math.max(8, Math.min(220, Math.ceil(len / 2.2)));
+  const ys = new Array(n + 1);
+  for (let i = 0; i <= n; i++) {
+    const s = i / n, x = ax + (bx - ax) * s, z = az + (bz - az) * s;
+    if (!world.inBounds(x, z)) return false;
+    if (t.isWater && t.isWater(x, z)) return false;
+    ys[i] = t.getHeight(x, z);
+  }
+  const step = len / n;
+  const win = Math.max(2, Math.round(10 / step));
+  for (let i = 0; i + win < ys.length; i++) {
+    if (Math.abs(ys[i + win] - ys[i]) / (step * win) > MAX_SLOPE) return false;
+  }
+  return true;
+}
+
+/** How many of the four cardinal/diagonal first roads through (cx,cz) are buildable. 0-4. */
+function startCorridors(world, cx, cz) {
+  let n = 0;
+  for (const deg of START_DIRS) {
+    const r = deg * Math.PI / 180;
+    const dx = Math.cos(r) * START_RUN / 2, dz = Math.sin(r) * START_RUN / 2;
+    if (roadCorridorOk(world, cx - dx, cz - dz, cx + dx, cz + dz)) n++;
+  }
+  return n;
+}
+
+/**
+ * Pick where a brand-new city opens. Deterministic — same seed, same starting view.
+ *
+ * The old score was a proxy: how much of the surrounding 200 m is dry, plus the height difference
+ * from the centre. Neither asks the question that actually matters, so on seed 4242 it opened the
+ * camera on a spot where no 140 m road could be drawn in ANY direction — the first thing the game
+ * did to a new player was refuse their first action, and the scripted playtest had to hunt 40 m
+ * away to lay its first road.
+ *
+ * So the proxy now only shortlists. The score that decides is the real one: how many first roads
+ * are actually buildable through the point, asked with the road tool's own rule.
  */
 function findBuildableStart(world) {
   const t = world.terrain;
@@ -167,7 +217,7 @@ function findBuildableStart(world) {
   const R = world.half * 0.62;      // stay away from the map edge
   const STEP = 120;                 // candidate spacing
   const PROBE = 40;                 // sample spacing inside a candidate
-  let best = null;
+  const shortlist = [];
   for (let cz = -R; cz <= R; cz += STEP) {
     for (let cx = -R; cx <= R; cx += STEP) {
       let dry = 0, total = 0, maxDrop = 0;
@@ -188,10 +238,31 @@ function findBuildableStart(world) {
       const flatness = 1 / (1 + maxDrop / 12);         // 12 m of relief across 400 m is already rolling
       const centreBias = 1 - Math.hypot(cx, cz) / (R * 1.6);
       const score = dryness * 0.45 + flatness * 0.45 + centreBias * 0.10;
-      if (!best || score > best.score) best = { x: cx, z: cz, score, dryness, maxDrop: +maxDrop.toFixed(1) };
+      shortlist.push({ x: cx, z: cz, score, dryness, maxDrop: +maxDrop.toFixed(1) });
     }
   }
-  return best;
+  if (!shortlist.length) return null;
+  shortlist.sort((a, b) => b.score - a.score);
+
+  // Nudge off the 120 m lattice as well: a grid point can sit in a gully while open ground is
+  // half a block away, and the camera does not care which of these it looks at.
+  const NUDGE = [[0, 0], [60, 0], [-60, 0], [0, 60], [0, -60], [60, 60], [-60, -60], [60, -60], [-60, 60]];
+  let best = null;
+  for (const c of shortlist.slice(0, 40)) {
+    for (const [ox, oz] of NUDGE) {
+      const x = c.x + ox, z = c.z + oz;
+      if (Math.abs(x) > R || Math.abs(z) > R) continue;
+      const corridors = startCorridors(world, x, z);
+      if (!best || corridors > best.corridors
+        || (corridors === best.corridors && c.score > best.score)) {
+        best = { ...c, x, z, corridors };
+      }
+      if (best.corridors === START_DIRS.length) return best; // every direction works; stop looking
+    }
+  }
+  // Nowhere on the map offers a clean first road (a mountain seed); the proxy's pick still beats
+  // the map origin, so open there rather than returning nothing.
+  return best || shortlist[0];
 }
 
 boot().catch((err) => {
