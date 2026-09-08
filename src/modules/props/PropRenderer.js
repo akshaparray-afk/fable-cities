@@ -45,7 +45,27 @@ export class PropRenderer {
 
     // --- real light pool -------------------------------------------------
     const q = this.engine.quality;
-    const n = q.density >= 1.2 ? 14 : q.density >= 0.9 ? 12 : q.density >= 0.6 ? 6 : 2;
+    /**
+     * Pool size. Every light in this pool is compiled into NUM_POINT_LIGHTS on every lit material
+     * in the scene and evaluated per fragment whether or not it is switched on, so the pool is a
+     * whole-frame cost, not a night-time one. Measured at 1080p on the demo city, interleaved over
+     * three repetitions to survive a contended machine:
+     *
+     *     12 lights  160.2 ms      4 lights  131.0 ms (-18%)      0 lights  121.9 ms (-24%)
+     *
+     * What it buys today is nothing. At a night street view where all twelve are lit at full
+     * intensity, switching every one of them off changes the frame by a mean of 0.01/255, and the
+     * single most-affected 120 px window in the image is indistinguishable. The cause is not
+     * intensity — multiplying it by 20 changes nothing measurable — it is RANGE: `distance` is
+     * ~22 m on a luminaire mounted ~15 m up, so the sphere barely reaches the pavement and what
+     * lands there is swamped by the emissive glow and the MAX-blended ground pool that already
+     * draw the light for free. Tripling the range is what makes these lights matter (19% of pixels
+     * move), and that is a look decision with the frame budget attached, not a perf fix.
+     *
+     * So: keep a small pool so the mechanism survives for whoever fixes the range, and stop paying
+     * for twelve of them in the meantime.
+     */
+    const n = q.density >= 1.2 ? 6 : q.density >= 0.9 ? 4 : q.density >= 0.6 ? 3 : 2;
     this.lights = [];
     this.lightGroup = new THREE.Group();
     this.lightGroup.name = 'props/lights';
