@@ -550,31 +550,51 @@ try {
   await key('Escape'); await key('Escape');
   const bzCat = await clickSel('.fc-cat[aria-label="Bulldoze"]');
   const stb = await state();
-  const tgt = await page.evaluate(() => {
+  /**
+   * Several candidates, not one. `clickWorld` refuses to click a point the HUD is covering and
+   * returns without dispatching anything, so a single target that happens to sit under a panel
+   * produced "bulldoze removes nothing" — a blocker against a module that was working fine. Walk
+   * the list until a click actually lands, and only then judge the tool.
+   */
+  const targets = await page.evaluate(() => {
     const w = window.__game.world;
-    const b = w.buildings.list[0];
-    if (b) return { x: b.x, z: b.z, kind: 'building', id: b.id };
-    const s = [...w.roads.segments.values()].pop();
-    if (!s) return null;
-    const p = s.points[Math.floor(s.points.length / 2)];
-    return { x: p.x, z: p.z, kind: 'road', id: s.id };
+    const out = w.buildings.list.slice(0, 8).map((b) => ({ x: b.x, z: b.z, kind: 'building', id: b.id }));
+    for (const s of [...w.roads.segments.values()].slice(-3)) {
+      const p = s.points[Math.floor(s.points.length / 2)];
+      out.push({ x: p.x, z: p.z, kind: 'road', id: s.id });
+    }
+    return out;
   });
+  const tgt = targets[0] || null;
   let bzLog = { target: tgt };
-  if (tgt) {
-    await hover(tgt.x, tgt.z, 10);
-    const hv = await state();
-    const bzHover = await shot('bulldoze-hover');
-    const before = await state();
-    await clickWorld(tgt.x, tgt.z, 25);
-    const after = await state();
-    bzLog = { target: tgt, hoverHighlighted: hv.overlay && hv.overlay.hover, hoverShot: bzHover,
-      buildings: `${before.buildings} → ${after.buildings}`, roadSegments: `${before.roadSegments} → ${after.roadSegments}`, money: `${before.money} → ${after.money}`,
-      removed: after.buildings < before.buildings || after.roadSegments < before.roadSegments };
+  let bzHover = null, bzClick = null, used = null, skipped = 0;
+  if (targets.length) {
+    const before0 = await state();
+    for (const cand of targets) {
+      const hv0 = await hover(cand.x, cand.z, 10);
+      if (!hv0.ok) { skipped++; continue; }               // covered by the HUD — not this tool's fault
+      used = cand;
+      const hv = await state();
+      bzHover = await shot('bulldoze-hover');
+      const before = await state();
+      bzClick = await clickWorld(cand.x, cand.z, 25);
+      const after = await state();
+      bzLog = { target: cand, candidatesSkippedAsCovered: skipped,
+        click: { landed: !!bzClick.ok, why: bzClick.why || null, px: `${bzClick.x},${bzClick.y}` },
+        hoverHighlighted: hv.overlay && hv.overlay.hover, hoverShot: bzHover,
+        buildings: `${before.buildings} → ${after.buildings}`, roadSegments: `${before.roadSegments} → ${after.roadSegments}`, money: `${before.money} → ${after.money}`,
+        removed: after.buildings < before.buildings || after.roadSegments < before.roadSegments };
+      if (bzLog.removed) break;
+    }
+    if (!used) bzLog = { target: targets[0], candidatesSkippedAsCovered: skipped, click: { landed: false, why: 'every candidate was under the HUD' }, removed: false, allCovered: true };
+    else bzLog.startedFrom = { buildings: before0.buildings };
   }
   const n8b = await drain();
-  record('8b. bulldoze', `Bulldoze category, hovered the ${tgt ? tgt.kind : 'nothing'}, clicked`, { categoryButton: bzCat, tool: stb.tool, ...bzLog, notifications: n8b.notes },
-    await shot('bulldoze-done'), bzLog.removed ? 'ok' : 'blocker');
-  if (!bzLog.removed) addBlocker('tools/entitytool', 'Bulldoze removes nothing under the cursor', JSON.stringify(bzLog), 'Check picker.pick() + the relevant api.remove().');
+  const bzVerdict = bzLog.removed ? 'ok' : (bzLog.allCovered ? 'friction' : 'blocker');
+  record('8b. bulldoze', `Bulldoze category, hovered the ${used ? used.kind : 'nothing'}, clicked`, { categoryButton: bzCat, tool: stb.tool, ...bzLog, notifications: n8b.notes },
+    await shot('bulldoze-done'), bzVerdict);
+  if (bzLog.allCovered) addFriction('ui / playtest driver', `Every bulldoze candidate (${skipped}) was under the HUD, so the tool was never exercised`, 'Pan the camera, or pick targets away from the panels, before judging the tool.');
+  else if (!bzLog.removed) addBlocker('tools/entitytool', 'Bulldoze removes nothing under the cursor', JSON.stringify(bzLog), 'Check picker.pick() + the relevant api.remove().');
 
   // ---------- 8c. Esc ----------
   await key('Escape'); await key('Escape');
