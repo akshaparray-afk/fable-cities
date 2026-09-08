@@ -30,16 +30,29 @@ const LIGHT_RANGE_SCALE = 3;
  * Scales every luminaire's PointLight intensity. The authored values (16 cd for a road lamp,
  * 10 for a classic one) are far below what a luminaire 15 m above the carriageway needs to put
  * light ON that carriageway — a real street lamp is a four-figure candela figure — so with the
- * cutoff widened the lamps still lit almost nothing. Swept at a night street view against the
- * same frame at ×1: ×5 moves 0.6% of pixels, ×10 5.8%, ×20 11.7%, ×40 17.0%. ×20 is the point
- * where the pavement and kerb first read as lit; ×40 is the sodium-lit look, and is what this
- * is set to — the tone mapper still has headroom there (see the clipping check in the commit).
+ * cutoff widened the lamps still lit almost nothing.
+ *
+ * Swept at a night street view. Highlight clipping never binds — AgX at exposure 1.0 keeps the
+ * fraction of pixels at or near white flat (0.35% near-clip, 0.00% clipped) all the way to ×200,
+ * and only reaches 0.01% clipped at ×320 — so brightness is not what limits this.
+ *
+ * What limits it is FACADE WASH. The luminaire sits ~15 m up with a 66 m cutoff, so it throws
+ * light at the building wall beside it as readily as at the carriageway, and past ×120 the tower
+ * corner reads as deliberately uplit rather than as spill from a street lamp. ×20 is where the
+ * pavement first reads as lit, ×80 is a lit street whose facade spill still looks incidental,
+ * ×200 and beyond is floodlit. Hence ×80.
+ *
+ *   scale     mean luma   clipped   near-clip   pixels >= 200
+ *     ×40         71.12     0.00%       0.35%           5.69%
+ *     ×80         74.71     0.00%       0.35%           5.82%
+ *    ×200         82.44     0.00%       0.35%           8.61%
+ *    ×320         87.80     0.01%       0.38%          12.59%
  *
  * This scales ONLY the real light: `luminaire()` draws the lamp's halo from `halo` and its ground
  * pool from `dia`, and neither reads `intensity`, so the faked lighting is untouched and the four
  * pooled lights still blend into the many lamps that never get one.
  */
-const LIGHT_INTENSITY_SCALE = 40;
+const LIGHT_INTENSITY_SCALE = 80;
 const CAR_COLORS = [
   0xf2f3f4, 0xe8e9ea, 0xd8dade, 0xb9bdc0, 0x9aa0a5, 0x6d7377, 0x2f3438, 0x1b1e21,
   0x2d4a72, 0x38607f, 0x6b2f33, 0x8f3b2c, 0x35513c, 0x7a6a4f, 0xc9a227, 0x1f4a3c,
