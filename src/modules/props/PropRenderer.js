@@ -21,6 +21,9 @@ const _sph = new THREE.Sphere();
 const _cam = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _mvp = new THREE.Matrix4();
+const _lightFrustum = new THREE.Frustum();
+const _lightVP = new THREE.Matrix4();
+const _lightSphere = new THREE.Sphere();
 const BUCKETS = 48;
 /** Transparent-pass draw order inside the props group (see build()). */
 const ORDER = { lightpool: 1, contact: 2, halo: 3 };
@@ -46,10 +49,11 @@ export class PropRenderer {
     // --- real light pool -------------------------------------------------
     const q = this.engine.quality;
     /**
-     * Pool size. Every light in this pool is compiled into NUM_POINT_LIGHTS on every lit material
-     * in the scene and evaluated per fragment whether or not it is switched on, so the pool is a
-     * whole-frame cost, not a night-time one. Measured at 1080p on the demo city, interleaved over
-     * three repetitions to survive a contended machine:
+     * Pool size. Every light in this pool is compiled into the light-count define on every lit
+     * material in the scene (NUM_SPOT_LIGHTS, since these are spots — see below) and evaluated per
+     * fragment whether or not it is switched on, so the pool is a whole-frame cost, not a
+     * night-time one. Measured at 1080p on the demo city, interleaved over three repetitions to
+     * survive a contended machine:
      *
      *     12 lights  160.2 ms      4 lights  131.0 ms (-18%)      0 lights  121.9 ms (-24%)
      *
@@ -70,13 +74,29 @@ export class PropRenderer {
     this.lightGroup = new THREE.Group();
     this.lightGroup.name = 'props/lights';
     for (let i = 0; i < n; i++) {
-      const l = new THREE.PointLight(0xffb877, 0, 46, 2);
+      /**
+       * A SpotLight aimed down, not a PointLight. A luminaire is a shade over a bulb: it throws
+       * light at the road, not at the building beside it. As a point light it lit the two equally,
+       * and that spill — not clipping — was what put a ceiling on the intensity, because past a
+       * point the tower corner reads as deliberately uplit rather than as a lamp catching the
+       * lower storeys.
+       *
+       * ANGLE is the half-angle of the cone. At 1.3 rad (74°) a head 15 m up covers a ~32 m radius
+       * of carriageway, comfortably more than the spacing these lamps sit at, and a lower fitting
+       * covers proportionally less — the cone widens with distance, so one angle serves both the
+       * 15 m road lamps and the 3.2 m warm fittings. PENUMBRA softens the rim so there is no
+       * cookie-cutter disc on the asphalt.
+       */
+      const l = new THREE.SpotLight(0xffb877, 0, 46, 1.3, 0.35, 2);
       l.name = `props/lamp${i}`;
       l.castShadow = false;
       // never toggled: three recompiles every lit material when the visible light count changes,
       // so the pool stays in the scene from the first frame and idles at intensity 0
       l.visible = true;
       l.position.set(0, -1000, 0);
+      // three reads the cone direction from target.matrixWorld, so the target has to be in the graph
+      l.target.position.set(0, -1010, 0);
+      this.lightGroup.add(l.target);
       this.lights.push({ light: l, source: null, want: null, level: 0 });
       this.lightGroup.add(l);
     }
@@ -236,8 +256,20 @@ export class PropRenderer {
   }
 
   /**
-   * Re-aim the real point lights at the luminaires nearest the camera. A light only moves to a new
-   * luminaire once it has faded out, so lamps cross-fade instead of teleporting.
+   * Re-aim the real lights at the luminaires worth lighting. A light only moves to a new luminaire
+   * once it has faded out, so lamps cross-fade instead of teleporting.
+   *
+   * "Worth lighting" has to mean ON SCREEN now that these are spots, and that coupling is the whole
+   * trap. Nearest-to-camera was fine for a point light — a 66 m sphere spills into frame from a
+   * lamp behind you — but a cone lights only a small disc under its own pole, so a lamp out of
+   * frame contributes literally nothing. Measured before this changed: all four pooled lamps sat
+   * below the bottom of the frame (NDC y −2.9 to −12.6) at 37-42 m, because under a pure distance
+   * metric a lamp 37 m behind outscores one 60 m ahead. Every one of the four was dark on screen,
+   * and the conversion to spots read as "the lamps stopped working".
+   *
+   * So the ground pool each luminaire would cast is frustum-tested, and lamps whose pool is in
+   * frame are preferred by a wide margin. Off-screen lamps are still ranked rather than dropped,
+   * so a slot always has somewhere to go and the cross-fade never snaps.
    */
   updateLights(camera, nightFactor, dt) {
     if (!this.lights.length) return;
@@ -247,6 +279,13 @@ export class PropRenderer {
       this.lightTimer = 0.25;
       camera.getWorldPosition(_cam);
       camera.getWorldDirection(_dir);
+      _lightFrustum.setFromProjectionMatrix(
+        _lightVP.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse),
+      );
+      // horizontal view direction, normalised — the raw one collapses as the camera tilts down,
+      // which is exactly when the ahead bias mattered most
+      const fl = Math.hypot(_dir.x, _dir.z) || 1;
+      const fx = _dir.x / fl, fz = _dir.z / fl;
       const N = this.lights.length;
       const best = [];
       const worst = () => best[best.length - 1];
@@ -255,8 +294,12 @@ export class PropRenderer {
         const d2 = dx * dx + dy * dy + dz * dz;
         if (d2 > 32000) continue;                       // ~180 m
         const dl = Math.sqrt(dx * dx + dz * dz) || 1;
-        const ahead = (dx * _dir.x + dz * _dir.z) / dl; // −1 behind … +1 in front
-        const score = d2 * (1.0 - 0.42 * ahead);
+        const ahead = (dx * fx + dz * fz) / dl;         // −1 behind … +1 in front
+        // is the pool this luminaire would cast actually in frame?
+        _lightSphere.center.set(s.x, s.groundY ?? (s.y - 6), s.z);
+        _lightSphere.radius = 16;
+        const inFrame = _lightFrustum.intersectsSphere(_lightSphere);
+        const score = d2 * (1.0 - 0.42 * ahead) * (inFrame ? 1 : 40);
         if (best.length < N) {
           best.push({ s, score });
           best.sort((p, q2) => p.score - q2.score);
@@ -278,6 +321,9 @@ export class PropRenderer {
         slot.source = want;
         if (want) {
           slot.light.position.set(want.x, want.y, want.z);
+          // straight down at the ground this luminaire stands over
+          slot.light.target.position.set(want.x, want.groundY ?? (want.y - 6), want.z);
+          slot.light.target.updateMatrixWorld();
           slot.light.color.copy(want.color);
           slot.light.distance = want.range;
         }

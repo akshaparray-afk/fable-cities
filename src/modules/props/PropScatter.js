@@ -140,9 +140,11 @@ export class PropScatter {
    * three repetitions at a night street view: 74.4 ms at ×1 against 69.4 ms at ×3, i.e. within
    * noise and if anything faster.
    */
-  addSource(x, y, z, color, intensity, range) {
+  addSource(x, y, z, color, intensity, range, groundY = y - 6) {
     this.sources.push({
       x, y, z, color,
+      // where the renderer aims the cone: the ground this luminaire is meant to light
+      groundY,
       intensity: intensity * LIGHT_INTENSITY_SCALE,
       range: range * LIGHT_RANGE_SCALE,
     });
@@ -372,7 +374,7 @@ export class PropScatter {
 
   /** Warm pool a luminaire lays on the pavement, and the halo around the head itself. */
   luminaire(x, y, z, gy, color, intensity, range, dia, halo = 1.8, dir = null, base = null) {
-    this.addSource(x, y, z, color, intensity, range);
+    this.addSource(x, y, z, color, intensity, range, gy);
     this.add('halo', { x, y, z, yaw: 0, s: halo });
     // The pool is laid as three overlapping discs strung along the road rather than one big quad:
     // a single 24 m quad is flat, so on any crest or dip it sinks under the carriageway and the
@@ -700,7 +702,7 @@ export class PropScatter {
         // a mast arm hangs the heads over the carriageway on the big approaches (the CS2 look)
         const mast = a.rank >= 3;
         this.add(mast ? 'traffic_light_mast' : 'traffic_light', { x: p.x, y: a.e.y, z: p.z, yaw, s: 1, phase });
-        this.addSource(p.x, a.e.y + 3.2, p.z, _c.setHex(0xff9a5a).clone(), 1.6, 8);
+        this.addSource(p.x, a.e.y + 3.2, p.z, _c.setHex(0xff9a5a).clone(), 1.6, 8, a.e.y);
       } else if (a.rank < maxRank || arms.length >= 4) {
         this.add('sign_post', { x: p.x, y: a.e.y, z: p.z, yaw, s: 1 });
         this.add('sign_stop', { x: p.x, y: a.e.y, z: p.z, yaw, s: 1 });
