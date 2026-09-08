@@ -7,7 +7,25 @@ import * as THREE from 'three';
 import { mergeRaw } from './GeomBuilder.js';
 import { buildSegmentPieces, buildJunctionPieces, layoutFor } from './RoadMesher.js';
 
-const TILE = 256;
+/**
+ * Batching tile, metres. Geometry is grouped per tile AND per material, so the mesh count — and
+ * with it the draw-call count, multiplied by every pass that submits the scene — is
+ * (tiles x materials). Roads run ~16 materials, and the long tail of those is tiny: `soil` averages
+ * 134 triangles per mesh, `path` 203, `median` 394. Those are draw calls, not geometry.
+ *
+ * Measured on the demo city at 1080p, quality high (stats().drawCalls, mean of 30 frames):
+ *
+ *              road meshes   aerial   street   skyline   street triangles
+ *   TILE  256          239     1867     1795      1564          9.19 M
+ *   TILE  512          104     1634     1651      1274          9.31 M
+ *   TILE 1024           45     1534     1631      1144          9.81 M
+ *
+ * 1024 buys almost nothing more at street level (1651 -> 1631) while adding 5% to a triangle count
+ * that is already well over budget, so 512 is the knee. Road-build cost does not measurably
+ * regress with tile size — medians 597 / 656 / 566 ms at 256 / 512 / 1024, differences inside the
+ * run-to-run spread, because an edit is dominated by terrain conforming rather than re-batching.
+ */
+const TILE = 512;
 const CAST_SHADOW = new Set(['barrier', 'barrier_base', 'guardrail', 'curb', 'granite']);
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
