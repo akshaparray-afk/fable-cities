@@ -156,10 +156,19 @@ export class RoadRenderer {
         mesh.receiveShadow = true;
         mesh.castShadow = CAST_SHADOW.has(mat);
         mesh.matrixAutoUpdate = false;
-        // large static geometry shows up in planar water reflections; the fading skirt is kept out of the
-        // GTAO pre-pass (it would leave an AO halo along the fade) — the main camera renders that layer too
+        // the fading skirt is kept out of the GTAO pre-pass (it would leave an AO halo along the
+        // fade) — the main camera renders that layer too
         if (mat === 'skirt') mesh.layers.set(this.engine.LAYER_NO_AO);
-        mesh.layers.enable(this.engine.LAYER_REFLECTED);
+        /**
+         * Road SURFACES stay out of the planar water reflection. A carriageway is flat and sits at
+         * or just above the waterline, so it presents itself to the mirrored camera almost edge-on
+         * and contributes a sliver of dark asphalt to a half-resolution, normal-distorted target.
+         * It cost 40 of the frame's draw calls — the single largest contributor to that pass —
+         * for something you cannot pick out of the water.
+         *
+         * The vertical roadside furniture (lamps, posts, masts, street trees) DOES reflect and
+         * keeps its layer below: those are the shapes that actually read on the water.
+         */
         tile.group.add(mesh);
         tile.meshes.set(mat, mesh);
       } else {

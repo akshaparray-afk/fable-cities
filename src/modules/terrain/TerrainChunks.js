@@ -164,7 +164,9 @@ export class TerrainChunks {
         mesh.receiveShadow = true;
         mesh.matrixAutoUpdate = false;
         mesh.frustumCulled = true;
-        mesh.layers.enable(3);
+        // NOT layer 3: the horizon ring starts at the map edge and runs out to 4x half, so its
+        // reflection lands on the far water where the environment's haze has already taken it.
+        // It is the in-map terrain, trees and buildings on the near bank that read in the water.
         this.group.add(mesh);
         this.horizonTiles.push(mesh);
       }
