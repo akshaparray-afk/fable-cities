@@ -8,24 +8,31 @@ import { mergeRaw } from './GeomBuilder.js';
 import { buildSegmentPieces, buildJunctionPieces, layoutFor } from './RoadMesher.js';
 
 /**
- * Batching tile, metres. Geometry is grouped per tile AND per material, so the mesh count — and
- * with it the draw-call count, multiplied by every pass that submits the scene — is
- * (tiles x materials). Roads run ~16 materials, and the long tail of those is tiny: `soil` averages
- * 134 triangles per mesh, `path` 203, `median` 394. Those are draw calls, not geometry.
+ * Batching tile, metres. Geometry is grouped per tile AND per material, so the tile size trades two
+ * budgeted quantities against each other: bigger tiles mean fewer meshes (fewer DRAW CALLS, since
+ * mesh count is tiles x materials) but coarser frustum culling, because a tile that is one-tenth
+ * visible still submits all of its geometry (more TRIANGLES).
  *
- * Measured on the demo city at 1080p, quality high (stats().drawCalls, mean of 30 frames):
+ * ARCHITECTURE.md §3 budgets both, accumulated over every pass of a frame: <= 2500 draw calls and
+ * <= 8 M triangles. Draw calls are the one with room; triangles are the one that binds. Measured on
+ * the demo city at 1080p, quality high, mean of 32 frames, at the two densest camera presets:
  *
- *              road meshes   aerial   street   skyline   street triangles
- *   TILE  256          239     1867     1795      1564          9.19 M
- *   TILE  512          104     1634     1651      1274          9.31 M
- *   TILE 1024           45     1534     1631      1144          9.81 M
+ *                civic                      junction
+ *              calls    triangles         calls    triangles
+ *   TILE 128    1703      8.49 M           1845      7.77 M
+ *   TILE 256    1537      8.63 M           1545      7.84 M
+ *   TILE 512    1465      8.90 M           1433      7.95 M
  *
- * 1024 buys almost nothing more at street level (1651 -> 1631) while adding 5% to a triangle count
- * that is already well over budget, so 512 is the knee. Road-build cost does not measurably
- * regress with tile size — medians 597 / 656 / 566 ms at 256 / 512 / 1024, differences inside the
- * run-to-run spread, because an edit is dominated by terrain conforming rather than re-batching.
+ * So 256 stays. A previous revision of this file raised it to 512 to buy draw calls, which was the
+ * wrong direction: it spent the binding budget to relieve the one with ~1000 calls of headroom.
+ * 128 is better still on triangles, but only by 0.14 M, for 166 more draw calls and 580 road meshes
+ * against 239 — not worth the mesh count for a change that does not reach the budget either way.
+ *
+ * Road-build cost does not measurably regress with tile size — medians 597 / 656 / 566 ms at
+ * 256 / 512 / 1024, differences inside the run-to-run spread, because an edit is dominated by
+ * terrain conforming rather than re-batching.
  */
-const TILE = 512;
+const TILE = 256;
 const CAST_SHADOW = new Set(['barrier', 'barrier_base', 'guardrail', 'curb', 'granite']);
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
