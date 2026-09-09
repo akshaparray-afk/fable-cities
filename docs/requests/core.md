@@ -106,3 +106,69 @@ playtest harness. Two copies of a rule will drift.
 **Request:** have the tools module export the predicate — something like
 `tools.api.canBuildRoad(a, b, typeId)` — and let `main.js` call it. Then core stops owning a copy of
 a module's rule, and the spawn search and the road tool can never disagree.
+
+---
+
+## 5. `src/core/Config.js` — three shadow cascades at `high`
+
+**What.** `QUALITY.high.cascades` 4 → 3. One value; nothing else reads it.
+
+**Why not in a module.** The quality presets are core's, and every module scales itself off them.
+
+**Correction first.** An earlier version of this change — and the comment shipped beside it — said
+the fourth cascade had to go to get under "the ≤1500 draw-call budget in §9". Both halves were
+wrong. The budget is §3's **≤2500 draw calls / ≤8 M triangles**, the 1500 is `PROMPT.md`'s original
+brief rather than the shipped contract, and at four cascades draw calls measured 1580 / 1634 —
+**never over**. Draw calls were never the problem, and I optimised several commits against a number
+I had invented. The comment in `Config.js` now records that.
+
+**Why at all — the real reason is triangles.** §3's counts are ACCUMULATED over every pass, and each
+shadow caster is re-submitted once per cascade. Measured at 1920×1080, quality=high, seed 1337, mean
+over 80 frames, by disabling each cascade light in turn at the `civic` preset:
+
+| | triangles | draw calls |
+|---|---|---|
+| the 3 shadow passes | **4.06 M** | 722 |
+| whole frame | 8.12 M | 1548 |
+
+Shadows are **half the triangle budget**. A fourth cascade costs ~1.3 M more, and nothing else
+measured refunds that. Note §3 describes the frame as "4 shadow cascades + GTAO + water reflection +
+main pass" — three is a deliberate deviation from the documented frame shape, taken because four
+cannot fit the 8 M ceiling on this scene. **If you would rather keep the documented shape, set it
+back to 4 and take the overage**; that is a legitimate call and this is why it is a request.
+
+**Cost.** The same 2048² maps cover 1400 m in three slices, so the near cascade spans 204 m instead
+of 150 m and its texels are ~26% coarser: 1.40/255 mean and 3.0% of pixels past a threshold of 8,
+against a 0.15/0.24% noise floor. `medium` has always shipped three.
+
+---
+
+## Still open: per-cascade caster culling (core / CSM)
+
+The measurement above says where the remaining triangles are, and the fix is core-owned so it is
+left as a request rather than done. Shadow-caster cost at `civic`, by group, measured by clearing
+`castShadow` on each group in turn:
+
+| caster | triangles | draw calls |
+|---|---|---|
+| roads | 1.145 M | 96 |
+| terrain-chunks | 0.876 M | 96 |
+| service-buildings | 0.491 M | 136 |
+| demo | 0.214 M | 88 |
+| props / traffic / vegetation | 0.089 / 0.053 / 0.046 M | 25 / 20 / 80 |
+| **all casters** | **4.058 M** | **722** |
+
+Every caster is submitted to every cascade it touches, whatever its screen size. The standard fix is
+a **per-cascade caster filter** — skip small objects in the distant cascades, where their shadow is
+sub-texel anyway. Street furniture, vehicles and vegetation are the obvious candidates; they are
+cheap individually but there are thousands of them. That needs a size/importance test inside the CSM
+cascade loop in `Engine.js`, which is core, and it is the only lever left that could pay for the
+fourth cascade.
+
+Two levers were measured and are **not** worth anyone's time:
+
+* **Road station density.** `RoadMesher.stations()` subdivides on a 2 cm vertical chord tolerance,
+  which looks extravagant. Loosening it 7.5× to 15 cm changed the frame by **0.01 M**: curvature and
+  the 8 m max step set the spacing, not terrain. Left alone.
+* **Material atlasing across shader families.** ≈ −65 draw calls and zero triangles — the 51 live
+  building pools span 21 distinct shader programs, so only 12 can ever merge.

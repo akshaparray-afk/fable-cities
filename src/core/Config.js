@@ -75,21 +75,36 @@ export const QUALITY = {
     propDensity: 0.7, lightBudget: 16,
   },
   /**
-   * `high` runs THREE cascades, not four, and that single value is what brings the frame inside
-   * the ≤1500 draw-call budget in ARCHITECTURE.md §9. Every shadow caster is submitted once per
-   * cascade, so the fourth was costing ~200 calls — more than every other lever measured put
-   * together. Mean over 40 frames at 1920×1080:
+   * `high` runs THREE cascades, not four, and the reason is the TRIANGLE budget, not draw calls.
    *
-   *                              city    junction
-   *     4 cascades               1580        1634      over budget
-   *     3 cascades               1418        1434      WITHIN budget
+   * (Correcting an earlier version of this comment, which claimed the fourth cascade was needed to
+   * get under "the ≤1500 draw-call budget in §9". Both halves were wrong: the budget lives in
+   * ARCHITECTURE.md §3 and is ≤2500 draw calls / ≤8 M triangles, and at four cascades draw calls
+   * measured 1580 / 1634 — never over. Nothing here was ever a draw-call problem.)
    *
-   * The alternatives were measured and are not enough on their own:
-   *   shadowDistance 1000 (keeping 4 cascades)   1533 / 1583   — and it drops distant shadows
-   *   perfect material atlasing across every
-   *   shader family                              ≈ −65 calls   — the 51 live building pools span
-   *                                                              21 distinct shader programs, so
-   *                                                              only 12 pools can ever be merged
+   * What the cascades actually cost is geometry. Every shadow caster is re-submitted once per
+   * cascade, and §3's counts are ACCUMULATED over all passes. Measured at 1920x1080, quality=high,
+   * seed 1337, mean over 80 frames, by disabling each cascade light in turn at the `civic` preset:
+   *
+   *     3 shadow passes            4.06 M triangles     722 draw calls
+   *     ...of a frame that totals  8.12 M triangles    1548 draw calls
+   *
+   * So shadows are HALF the triangle budget, and a fourth cascade costs ~1.3 M more — which no
+   * other lever measured comes close to refunding. Note §3 describes the frame as "4 shadow
+   * cascades + GTAO + water reflection + main"; three is a deliberate deviation from that shape,
+   * taken because four cannot fit the 8 M ceiling on this scene.
+   *
+   * Levers measured and rejected on the way here, so nobody re-runs them:
+   *   road station density (the 2 cm chord tolerance in RoadMesher)  0.01 M — curvature and the
+   *                                                                 8 m max step set the spacing,
+   *                                                                 not terrain; a 7.5x looser
+   *                                                                 tolerance changed nothing
+   *   shadowDistance 1000, keeping 4 cascades                        drops distant shadows and
+   *                                                                 still does not fit
+   *   perfect material atlasing across every shader family           ~-65 draw calls, 0 triangles —
+   *                                                                 the 51 live building pools span
+   *                                                                 21 distinct shader programs, so
+   *                                                                 only 12 pools can ever merge
    *
    * The cost is real and near-field: the same 2048² maps now cover 1400 m in three slices, so the
    * near cascade spans 204 m instead of 150 m and its texels are ~26% coarser. Measured against the

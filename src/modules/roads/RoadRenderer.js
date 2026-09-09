@@ -33,7 +33,23 @@ import { buildSegmentPieces, buildJunctionPieces, layoutFor } from './RoadMesher
  * terrain conforming rather than re-batching.
  */
 const TILE = 256;
-const CAST_SHADOW = new Set(['barrier', 'barrier_base', 'guardrail', 'curb', 'granite']);
+/**
+ * Which road materials are submitted to the shadow cascades. `curb` is deliberately NOT here.
+ *
+ * A kerb is a ~12 cm upstand, and casting it costs 0.194 M of the accumulated triangle budget at
+ * `civic` — every kerb tile is re-submitted once per cascade — for a hairline band that is already
+ * drawn twice over by cheaper means: `sweepEdge` bakes the kerb's own contact shadow into the
+ * roadside grit (see RoadMesher), and the GTAO pre-pass darkens the kerb/carriageway junction. Cut
+ * it and the kerb still reads as a raised edge; keep it and `civic` sits over §3's 8 M ceiling.
+ *
+ * Measured at 1920x1080, quality=high, seed 1337, mean over 80 frames — the three road casters that
+ * actually matter are NOT the kerb, so they stay:
+ *     street trees   0.560 M    dappled shade, the most valuable shadow in the scene
+ *     street lamps   0.278 M    long, legible mast shadows at low sun
+ *     curb           0.194 M    REMOVED — a hairline, already baked
+ *     barrier / barrier_base / guardrail / granite   ~0.00 M each
+ */
+const CAST_SHADOW = new Set(['barrier', 'barrier_base', 'guardrail', 'granite']);
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3();
