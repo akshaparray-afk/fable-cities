@@ -178,7 +178,17 @@ export async function init(ctx) {
   root.addEventListener('pointerdown', (e) => {
     const tool = world.tool && world.tool.active;
     if (!tool || tool === 'select' || tool === 'info') return;
-    if (e.target.closest && e.target.closest('button, a, input, select, textarea, [role="button"], [role="slider"], [role="tab"], [contenteditable="true"]')) return;
+    if (e.button !== 0) return;
+    /**
+     * Anything a click already means something on is not a swallowed click. A tag whitelist is not
+     * enough: `.fc-toast` is a div you click to dismiss, so dismissing this very hint used to spawn
+     * another one. Anything carrying an ARIA role is interactive by definition, and the panels the
+     * player can act on are listed by class.
+     */
+    if (e.target.closest && e.target.closest(
+      'button, a, input, select, textarea, [contenteditable="true"], [role], '
+      + '.fc-toast, .fc-item, .fc-cat, .fc-onb, .fc-notif, .fc-settings, .fc-shortcuts',
+    )) return;
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     if (now - lastBlockedHint < 4000) return;
     lastBlockedHint = now;

@@ -49,25 +49,26 @@ export class PropRenderer {
     // --- real light pool -------------------------------------------------
     const q = this.engine.quality;
     /**
-     * Pool size. Every light in this pool is compiled into the light-count define on every lit
-     * material in the scene (NUM_SPOT_LIGHTS, since these are spots — see below) and evaluated per
-     * fragment whether or not it is switched on, so the pool is a whole-frame cost, not a
-     * night-time one. Measured at 1080p on the demo city, interleaved over three repetitions to
-     * survive a contended machine:
+     * Pool size. Every light here is compiled into NUM_SPOT_LIGHTS on every lit material in the
+     * scene and evaluated per fragment whether or not it is switched on, so the pool is a
+     * whole-frame cost rather than a night-time one — which is why it is small and fixed.
+     *
+     * The size was chosen while these were PointLights that lit almost nothing (a 22 m cutoff on a
+     * 9 m head), when dropping 12 → 4 cost no visible light at all. Measured then, at 1080p on the
+     * demo city, interleaved over three repetitions on a contended machine:
      *
      *     12 lights  160.2 ms      4 lights  131.0 ms (-18%)      0 lights  121.9 ms (-24%)
      *
-     * What it buys today is nothing. At a night street view where all twelve are lit at full
-     * intensity, switching every one of them off changes the frame by a mean of 0.01/255, and the
-     * single most-affected 120 px window in the image is indistinguishable. The cause is not
-     * intensity — multiplying it by 20 changes nothing measurable — it is RANGE: `distance` is
-     * ~22 m on a luminaire mounted ~15 m up, so the sphere barely reaches the pavement and what
-     * lands there is swamped by the emissive glow and the MAX-blended ground pool that already
-     * draw the light for free. Tripling the range is what makes these lights matter (19% of pixels
-     * move), and that is a look decision with the frame budget attached, not a perf fix.
+     * Those are PointLight timings and have NOT been re-measured for spots; treat them as the
+     * budget argument for keeping the pool small, not as a current benchmark.
      *
-     * So: keep a small pool so the mechanism survives for whoever fixes the range, and stop paying
-     * for twelve of them in the meantime.
+     * What changed since is that the lights now do real work — widened cutoff, ×80 intensity and a
+     * downward cone put the road at 91.5 mean luma against 39.1 with the lamps dark. That reopens
+     * the size question the timings above closed: four lamps carry a real light and every other
+     * lamp in frame relies on the emissive glow and the MAX-blended ground pool. Whether the
+     * boundary between them reads at this intensity has been checked only on a still, never on a
+     * moving camera. If it does read, the honest fixes are a larger pool (at the cost above) or a
+     * lower intensity — not a wider cone.
      */
     const n = q.density >= 1.2 ? 6 : q.density >= 0.9 ? 4 : q.density >= 0.6 ? 3 : 2;
     this.lights = [];
@@ -81,11 +82,12 @@ export class PropRenderer {
        * point the tower corner reads as deliberately uplit rather than as a lamp catching the
        * lower storeys.
        *
-       * ANGLE is the half-angle of the cone. At 1.3 rad (74°) a head 15 m up covers a ~32 m radius
-       * of carriageway, comfortably more than the spacing these lamps sit at, and a lower fitting
-       * covers proportionally less — the cone widens with distance, so one angle serves both the
-       * 15 m road lamps and the 3.2 m warm fittings. PENUMBRA softens the rim so there is no
-       * cookie-cutter disc on the asphalt.
+       * ANGLE is the half-angle of the cone. At 1.3 rad (74°) a 9 m street-lamp head (RoadTypes.js
+       * STREET_LAMP) reaches 9·tan(1.3) = 32.4 m, which is the 32 m these poles are spaced at, so
+       * the pools just meet. The cone widens with distance, so one angle also serves the 14 m
+       * motorway mast and the ~3.9 m classic lamp in proportion. PENUMBRA softens the rim so there
+       * is no cookie-cutter disc on the asphalt — note it also narrows the full-intensity core, so
+       * the pools scallop toward their edges rather than tiling flat.
        */
       const l = new THREE.SpotLight(0xffb877, 0, 46, 1.3, 0.35, 2);
       l.name = `props/lamp${i}`;
@@ -289,6 +291,14 @@ export class PropRenderer {
       const N = this.lights.length;
       const best = [];
       const worst = () => best[best.length - 1];
+      /**
+       * Hysteresis. The in-frame test below is worth a 40x score swing, so without this a lamp
+       * sitting on the edge of the frustum would win and lose its slot on alternate passes as the
+       * camera drifts, and the pool would visibly churn. A lamp that already holds a slot is tested
+       * against a larger sphere and given a discount, so it has to be clearly beaten to lose it.
+       */
+      const held = new Set();
+      for (const slot of this.lights) if (slot.source) held.add(slot.source);
       for (const s of this.sources) {
         const dx = s.x - _cam.x, dy = s.y - _cam.y, dz = s.z - _cam.z;
         const d2 = dx * dx + dy * dy + dz * dz;
@@ -296,10 +306,11 @@ export class PropRenderer {
         const dl = Math.sqrt(dx * dx + dz * dz) || 1;
         const ahead = (dx * fx + dz * fz) / dl;         // −1 behind … +1 in front
         // is the pool this luminaire would cast actually in frame?
+        const incumbent = held.has(s);
         _lightSphere.center.set(s.x, s.groundY ?? (s.y - 6), s.z);
-        _lightSphere.radius = 16;
+        _lightSphere.radius = incumbent ? 26 : 16;
         const inFrame = _lightFrustum.intersectsSphere(_lightSphere);
-        const score = d2 * (1.0 - 0.42 * ahead) * (inFrame ? 1 : 40);
+        const score = d2 * (1.0 - 0.42 * ahead) * (inFrame ? 1 : 40) * (incumbent ? 0.6 : 1);
         if (best.length < N) {
           best.push({ s, score });
           best.sort((p, q2) => p.score - q2.score);

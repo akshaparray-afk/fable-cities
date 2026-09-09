@@ -129,7 +129,9 @@ export class CameraController {
       // A build tool reads the same one-finger drag it would use to draw, so one-finger pan is
       // only offered when nothing is armed. Two fingers always reach the camera (below).
       const tool = this.world.tool && this.world.tool.active;
-      const toolArmed = !!tool && tool !== 'select';
+      // 'info' paints an overlay and consumes no drag, so it must not cost the player their pan.
+      // Kept identical to the list in src/modules/ui/index.js — the two have to agree.
+      const toolArmed = !!tool && tool !== 'select' && tool !== 'info';
       const touchPan = !!drag && drag.pointerType === 'touch' && input.touchCount === 1 && !toolArmed;
       const panDrag = drag && (drag.button === 1 || (drag.button === 0 && input.alt) || touchPan);
       const rotDrag = drag && drag.button === 2 && drag.pointerType !== 'touch';

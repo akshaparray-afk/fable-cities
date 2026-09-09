@@ -27,16 +27,16 @@ const LAMP_MARGIN = 3.0;            // roads keeps its lamps this far from a tri
 /** Widens every luminaire's PointLight cutoff — see addSource() for why, and why it is free. */
 const LIGHT_RANGE_SCALE = 3;
 /**
- * Scales every luminaire's PointLight intensity. The authored values (16 cd for a road lamp,
- * 10 for a classic one) are far below what a luminaire 15 m above the carriageway needs to put
- * light ON that carriageway — a real street lamp is a four-figure candela figure — so with the
- * cutoff widened the lamps still lit almost nothing.
+ * Scales every luminaire's light intensity. The authored values (16 cd for a road lamp, 10 for a
+ * classic one) are far below what a luminaire 9 m above the carriageway needs to put light ON that
+ * carriageway — a real street lamp is a four-figure candela figure — so with the cutoff widened
+ * the lamps still lit almost nothing.
  *
  * Swept at a night street view. Highlight clipping never binds — AgX at exposure 1.0 keeps the
  * fraction of pixels at or near white flat (0.35% near-clip, 0.00% clipped) all the way to ×200,
  * and only reaches 0.01% clipped at ×320 — so brightness is not what limits this.
  *
- * What limits it is FACADE WASH. The luminaire sits ~15 m up with a 66 m cutoff, so it throws
+ * What limits it is FACADE WASH. The luminaire sits 9 m up with a 66 m cutoff, so it throws
  * light at the building wall beside it as readily as at the carriageway, and past ×120 the tower
  * corner reads as deliberately uplit rather than as spill from a street lamp. ×20 is where the
  * pavement first reads as lit, ×80 is a lit street whose facade spill still looks incidental,
@@ -49,8 +49,13 @@ const LIGHT_RANGE_SCALE = 3;
  *    ×320         87.80     0.01%       0.38%          12.59%
  *
  * This scales ONLY the real light: `luminaire()` draws the lamp's halo from `halo` and its ground
- * pool from `dia`, and neither reads `intensity`, so the faked lighting is untouched and the four
- * pooled lights still blend into the many lamps that never get one.
+ * pool from `dia`, and neither reads `intensity`, so the faked lighting every other lamp relies on
+ * is untouched.
+ *
+ * Open question, stated rather than hidden: at ×80 the handful of lamps holding a real light are
+ * measurably brighter than the many that only have the faked pool, and that boundary has been
+ * checked on a still frame only — never on a camera that moves through it. If it reads, lower this
+ * or raise the pool size in PropRenderer.
  */
 const LIGHT_INTENSITY_SCALE = 80;
 const CAR_COLORS = [
@@ -126,16 +131,20 @@ export class PropScatter {
   }
 
   /**
-   * A warm luminaire the renderer may put a real PointLight on.
+   * A warm luminaire the renderer may put a real light on.
    *
    * `range` becomes the light's `distance`, which in three is not the falloff — the falloff is
    * 1/d² regardless — but a WINDOW that multiplies it by (1 - (d/range)^4)² and forces it to zero
-   * at the cutoff. The declared ranges (22 m for a road lamp, 21 m for a classic one) were barely
-   * wider than the mounting height of the luminaire they belong to (~15 m), so the window was
-   * still closing over the very ground the lamp is meant to light: directly beneath a road lamp it
-   * held back a third of the contribution, and by 22 m out it clipped everything to nothing.
+   * at the cutoff.
    *
-   * Widening it costs nothing measurable — the shader evaluates every point light for every
+   * The heads are lower than the cutoffs, so directly under a pole the window barely bites: a
+   * street lamp is 9.0 m (RoadTypes.js STREET_LAMP; the motorway mast is 14 m, the classic lamp
+   * ~3.9 m) against a 22 m cutoff, which holds back 5.5%. It is the POOL EDGE that was being
+   * strangled. At 16 m out from a 9 m head the slant range is 18.4 m, where the window is 0.27 —
+   * 73% of the contribution gone — and by 20 m it is essentially zero. So the lamp lit a tight
+   * disc at its own feet and nothing of the road between poles, which sit 32 m apart.
+   *
+   * Widening the cutoff costs nothing measurable — the shader evaluates every light for every
    * fragment whatever its range, so this changes the arithmetic and not the work. Interleaved over
    * three repetitions at a night street view: 74.4 ms at ×1 against 69.4 ms at ×3, i.e. within
    * noise and if anything faster.

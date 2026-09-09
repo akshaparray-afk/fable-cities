@@ -70,7 +70,8 @@ export class Input {
       }
       // With two fingers down the "pointer" would jitter between them; keep the ray on the first.
       if (this.touchCount < 2) this._setPointer(e.clientX, e.clientY);
-      if (this.drag) {
+      // only the pointer that owns the drag may move it — otherwise a second finger drives it
+      if (this.drag && e.pointerId === this.drag.pointerId) {
         this.drag.dx += e.clientX - this.drag.x;
         this.drag.dy += e.clientY - this.drag.y;
         this.drag.x = e.clientX; this.drag.y = e.clientY;
@@ -87,19 +88,35 @@ export class Input {
       this.justPressedButtons.add(e.button);
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
       this._refreshTouchCount();
-      this.drag = { button: e.button, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, dx: 0, dy: 0, totalDx: 0, totalDy: 0, active: false, startGround: this.ground.clone(), startGroundValid: this.groundValid, target: e.target, overUIAtDown: false, synthetic: !!e.__synthetic, pointerType: e.pointerType || 'mouse' };
+      /**
+       * A drag belongs to the pointer that started it. Without this a second finger overwrote the
+       * first finger's drag, and since every touch reports button 0, whichever finger lifted first
+       * then ended it — so a pinch left the survivor dragging nothing and tools saw a drag end they
+       * never earned. A mouse keeps ONE pointerId across its buttons, so pressing a second mouse
+       * button still replaces the drag exactly as it did before.
+       */
+      const live = this.drag;
+      const ownerGone = live && !this.pointers.has(live.pointerId);
+      if (!live || live.pointerId === e.pointerId || ownerGone) {
+        this.drag = { pointerId: e.pointerId, button: e.button, startX: e.clientX, startY: e.clientY, x: e.clientX, y: e.clientY, dx: 0, dy: 0, totalDx: 0, totalDy: 0, active: false, startGround: this.ground.clone(), startGroundValid: this.groundValid, target: e.target, overUIAtDown: false, synthetic: !!e.__synthetic, pointerType: e.pointerType || 'mouse' };
+      }
       try { c.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
     });
     window.addEventListener('pointercancel', (e) => {
+      this.buttons = e.buttons;
       this.pointers.delete(e.pointerId);
       this._refreshTouchCount();
+      // pointercancel REPLACES pointerup — no up follows — so the drag has to be torn down here
+      // too, or it stays live for ever and keeps accumulating movement. It is dropped WITHOUT
+      // publishing an endedDrag: a cancelled gesture must not commit whatever a tool was staging.
+      if (this.drag && e.pointerId === this.drag.pointerId) this.drag = null;
     });
     window.addEventListener('pointerup', (e) => {
       this.buttons = e.buttons;
       this.justReleasedButtons.add(e.button);
       this.pointers.delete(e.pointerId);
       this._refreshTouchCount();
-      if (this.drag && this.drag.button === e.button) {
+      if (this.drag && e.pointerId === this.drag.pointerId && this.drag.button === e.button) {
         this.drag.ended = true;
         this._endedDrag = this.drag;
         this.drag = null;
