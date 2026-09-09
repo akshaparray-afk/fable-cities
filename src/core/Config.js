@@ -74,8 +74,33 @@ export const QUALITY = {
     density: 0.7, reflections: false, particles: 0.6, textureSize: 1024,
     propDensity: 0.7, lightBudget: 16,
   },
+  /**
+   * `high` runs THREE cascades, not four, and that single value is what brings the frame inside
+   * the ≤1500 draw-call budget in ARCHITECTURE.md §9. Every shadow caster is submitted once per
+   * cascade, so the fourth was costing ~200 calls — more than every other lever measured put
+   * together. Mean over 40 frames at 1920×1080:
+   *
+   *                              city    junction
+   *     4 cascades               1580        1634      over budget
+   *     3 cascades               1418        1434      WITHIN budget
+   *
+   * The alternatives were measured and are not enough on their own:
+   *   shadowDistance 1000 (keeping 4 cascades)   1533 / 1583   — and it drops distant shadows
+   *   perfect material atlasing across every
+   *   shader family                              ≈ −65 calls   — the 51 live building pools span
+   *                                                              21 distinct shader programs, so
+   *                                                              only 12 pools can ever be merged
+   *
+   * The cost is real and near-field: the same 2048² maps now cover 1400 m in three slices, so the
+   * near cascade spans 204 m instead of 150 m and its texels are ~26% coarser. Measured against the
+   * same frame, that is 1.40/255 mean and 3.0% of pixels beyond a threshold of 8, against a
+   * 0.15/0.24% noise floor — visible to a measurement, hard to find by eye, and tree, vehicle and
+   * kerb shadows all still read. `medium` has always shipped three cascades.
+   *
+   * To trade the budget back for shadow resolution, set this to 4. Nothing else depends on it.
+   */
   high: {
-    name: 'high', pixelRatio: 1.5, shadowMapSize: 2048, cascades: 4, shadowDistance: 1400,
+    name: 'high', pixelRatio: 1.5, shadowMapSize: 2048, cascades: 3, shadowDistance: 1400,
     gtao: true, bloom: true, smaa: true, anisotropy: 16, drawDistance: 5000,
     density: 1.0, reflections: true, particles: 1.0, textureSize: 2048,
     propDensity: 1.0, lightBudget: 32,
