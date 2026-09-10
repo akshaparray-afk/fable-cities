@@ -28,6 +28,8 @@ export const api = {};
 
 let hud = null;
 let statTimer = 0;
+/** Last COMPLETED frame's renderer.info — see the fps meter in init() for why it is sampled there. */
+const lastFrameInfo = { calls: 0, triangles: 0 };
 
 export async function init(ctx) {
   const { world, events } = ctx;
@@ -39,6 +41,36 @@ export async function init(ctx) {
   /** Left column: selected-entity panel and info-view legend stack here. */
   hud.leftStack = h('div.fc-left');
   root.appendChild(hud.leftStack);
+
+  /**
+   * Frame-rate meter. Off unless asked for with `?fps=1` (or `?debug=1`), so the default HUD is
+   * unchanged and every screenshot in ARCHITECTURE §7 still renders exactly what it asked for.
+   *
+   * It reads `stats().fpsEstimate`, which is a median WALL-CLOCK interval — the rate a player
+   * actually sees. It is deliberately not `cpuFrameMs`: that only times command submission and
+   * over-reported this scene by 3.5x (11.5 ms / "87 fps" against a real 40.6 ms / 24.7 fps).
+   * Both are shown side by side precisely so the gap is visible rather than hidden.
+   */
+  hud.fpsMeter = null;
+  if (ctx.config && (ctx.config.get('fps') === '1' || ctx.config.debug)) {
+    hud.fpsMeter = h('div.fc-fps', { 'aria-hidden': 'true' });
+    root.appendChild(hud.fpsMeter);
+    /**
+     * Draw calls and triangles have to be sampled AFTER the render, not in `update()`.
+     * `Engine._tick` calls `renderer.info.reset()` before the update callbacks run, so a module
+     * reading `stats()` from `update()` sees a counter that was cleared microseconds earlier — it
+     * reported "1 draws / 0.00 M tris" until this hook existed. The frame rate fields are fine
+     * either way; only the renderer.info counters are affected.
+     */
+    // NB `onAfterRender` has no unsubscribe, so this callback outlives dispose() — it must never
+    // touch `hud`, which dispose() nulls. It writes into an object captured directly instead.
+    const info = lastFrameInfo;
+    ctx.engine.onAfterRender(() => {
+      const r = ctx.engine.renderer.info.render;
+      info.calls = r.calls;
+      info.triangles = r.triangles;
+    });
+  }
 
   // ---------- controller helpers used by components ----------
   hud.selectTool = (tool, options = {}) => {
@@ -234,6 +266,16 @@ export function update(dt) {
   if (statTimer > 0.5) {
     statTimer = 0;
     hud.top.refreshStats(); hud.toolbar.refreshDemand();
+    if (hud.fpsMeter) {
+      const st = hud.ctx.engine.stats();
+      const cls = st.fpsEstimate >= 50 ? ' is-good' : st.fpsEstimate >= 30 ? ' is-ok' : ' is-low';
+      hud.fpsMeter.className = 'fc-fps' + cls;
+      hud.fpsMeter.textContent =
+        `${st.fpsEstimate.toFixed(1)} fps   ${st.wallFrameMs.toFixed(1)} ms/frame`
+        + `\ncpu ${st.cpuFrameMs.toFixed(1)} ms (submit only)`
+        + `\n${lastFrameInfo.calls} draws   ${(lastFrameInfo.triangles / 1e6).toFixed(2)} M tris`
+        + `\n${st.quality} @ ${st.size[0]}x${st.size[1]}`;
+    }
     if (hud.settings.isOpen) hud.settings.refresh();
     if (hud.infoview.isOpen) hud.infoview.refresh();
     // left column: fade the bottom edge only while it actually scrolls (legend + selection taller than the space above the tray)

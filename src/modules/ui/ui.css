@@ -827,3 +827,26 @@
   .fc-hud.tray-open .fc-left { max-height: 34vh; }
   .fc-settings, .fc-notif { max-height: calc(100% - var(--fc-top-h) - 3 * var(--fc-gap)); }
 }
+
+/* Frame-rate meter (?fps=1 or ?debug=1). Bottom-left, clear of the toolbar tray and the left
+   stack's scroll area; never interactive, so it can never eat a click meant for the world. */
+.fc-fps {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 40;
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: rgba(10, 14, 20, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(6px);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+  letter-spacing: 0.02em;
+  color: #cfd8e3;
+  pointer-events: none;
+  user-select: none;
+}
+.fc-fps.is-good { color: #7ee08a; border-color: rgba(126, 224, 138, 0.35); }
+.fc-fps.is-ok   { color: #f2c94c; border-color: rgba(242, 201, 76, 0.35); }
+.fc-fps.is-low  { color: #f08a7e; border-color: rgba(240, 138, 126, 0.38); }
