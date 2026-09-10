@@ -454,6 +454,16 @@ export class Engine {
     this._lastTime = performance.now();
     this._fpsSamples = new Float32Array(90);
     this._fpsIdx = 0;
+    /**
+     * Wall-clock interval between frames, which is NOT the same thing as `_fpsSamples`.
+     * `_fpsSamples` times the body of `_tick`, and `renderer.render()` returns once the commands
+     * are queued — not once the GPU has drawn them. On a GPU-bound frame the two diverge wildly:
+     * measured on the demo city at 1080p/high, `_fpsSamples` said 11.5 ms (87 fps) while frames
+     * were actually arriving 40.6 ms apart (24.7 fps). Anything reporting a frame RATE has to use
+     * this buffer; `_fpsSamples` only ever answers "how much CPU did we spend submitting".
+     */
+    this._wallSamples = new Float32Array(90);
+    this._wallIdx = 0;
     this._materialsDirty = true;
     this._registered = new WeakSet();
     this.errors = [];
@@ -706,6 +716,8 @@ export class Engine {
   _tick() {
     const now = performance.now();
     let dt = (now - this._lastTime) / 1000;
+    // the real interval between frames, before any headless/timeScale substitution below
+    if (this.frame > 0) this._wallSamples[this._wallIdx++ % this._wallSamples.length] = now - this._lastTime;
     this._lastTime = now;
     if (this.config.headless) dt = 1 / 60;
     dt = Math.min(dt, 0.1) * (this.config.timeScale || 1);
@@ -758,12 +770,26 @@ export class Engine {
     let sum = 0, max = 0;
     for (let i = 0; i < n; i++) { sum += this._fpsSamples[i]; max = Math.max(max, this._fpsSamples[i]); }
     const avgMs = n ? sum / n : 0;
+    /**
+     * Frame RATE comes from the wall-clock interval, never from `cpuFrameMs`. A median, not a
+     * mean, so a single shader-compile or GC spike cannot move it — the same reason
+     * `perfguard/guard.js` medians its own window.
+     */
+    const wn = Math.min(this._wallIdx, this._wallSamples.length);
+    let wallMs = 0;
+    if (wn) {
+      const w = Array.prototype.slice.call(this._wallSamples, 0, wn).sort((a, b) => a - b);
+      wallMs = w[wn >> 1];
+    }
     const info = this.renderer.info;
     return {
       frame: this.frame,
+      /** CPU spent inside `_tick` SUBMITTING the frame. Not a frame rate — see `_wallSamples`. */
       cpuFrameMs: +avgMs.toFixed(2),
       cpuFrameMaxMs: +max.toFixed(2),
-      fpsEstimate: avgMs > 0 ? +(1000 / avgMs).toFixed(1) : 0,
+      /** Median wall-clock gap between frames: what the player actually experiences. */
+      wallFrameMs: +wallMs.toFixed(2),
+      fpsEstimate: wallMs > 0 ? +(1000 / wallMs).toFixed(1) : 0,
       drawCalls: info.render.calls,
       triangles: info.render.triangles,
       geometries: info.memory.geometries,

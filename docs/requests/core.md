@@ -172,3 +172,55 @@ Two levers were measured and are **not** worth anyone's time:
   the 8 m max step set the spacing, not terrain. Left alone.
 * **Material atlasing across shader families.** ≈ −65 draw calls and zero triangles — the 51 live
   building pools span 21 distinct shader programs, so only 12 can ever merge.
+
+---
+
+## 6. `src/core/Engine.js` — `stats()` reported a frame rate it could not know
+
+**What.** Add a wall-clock inter-frame ring buffer next to `_fpsSamples`; `fpsEstimate` is now
+`1000 / median(wall interval)` and the old number is still there as `cpuFrameMs`, plus a new
+`wallFrameMs`.
+
+**Why not in a module.** `_tick` is the only place that sees the frame boundary.
+
+**Why at all.** `_fpsSamples` times the body of `_tick`, and `renderer.render()` returns when the
+commands are *queued*, not when the GPU has drawn them. On a GPU-bound frame the two are not close:
+
+| | |
+|---|---|
+| `cpuFrameMs` said | 11.5 ms — "87 fps" |
+| frames were actually arriving | 40.6 ms apart — **24.7 fps** |
+
+So `fpsEstimate` was reporting 3.5x the real frame rate. That number is what `tools/check.mjs`
+prints, what the critics in `docs/critique/` scored against, and what §7's verification loop asks an
+agent to read — it has been telling everyone the frame budget was comfortably met while the game ran
+at a third of it. (It is not always wrong: under `?headless=1` the GPU queue backs up and the CPU
+blocks inside `render()`, so the two converge. That is exactly what makes it dangerous — it looks
+right in the tooling path and is wrong in the one players use.)
+
+`perfguard/index.js:162` already measured the real interval for its own guard, so the correct
+measurement was in the repo; `stats()` just was not using it. Median rather than mean, for the reason
+`perfguard/guard.js` gives: a single shader compile or GC spike must not move it.
+
+**Risk.** Anything comparing `fpsEstimate` against a historical number will now see a lower, truer
+value. Nothing in `src/` reads it (perfguard has its own); `tools/check.mjs` only prints it.
+
+---
+
+## Measuring frame rate in this repo — please read before quoting a number
+
+Four separate ways to get a wrong answer, all of which produced wrong numbers for me first:
+
+1. **`stats().cpuFrameMs` is not a frame rate.** See above. Use `wallFrameMs` / `fpsEstimate`.
+2. **Vsync quantises wall-clock into steps of 16.67 ms.** Frame times land on 16.7 / 33.3 / 50.0 and
+   a 1 ms saving is invisible until it crosses a step. Every arm of one sweep read as "no change"
+   for this reason alone. Launch Chrome with `--disable-gpu-vsync --disable-frame-rate-limit`, and
+   call `gl.finish()` before stopping the clock.
+3. **`perfguard` moves the settings underneath you.** It is ON unless the URL is a tooling URL, it
+   steps the whole preset down twice, and if it fires mid-run every later arm looks faster than
+   every earlier one. Pin it with `?perfguard=0` for any A/B, and alternate arm order (ABBA) so a
+   drift cannot masquerade as an effect.
+4. **Assert the state you think you set.** After the daylight gate in `PropRenderer` existed, a
+   harness that wrote `lightGroup.visible = true` was silently overwritten every frame, and measured
+   "lights on" against "lights on" — 0.1 ms instead of 5.26 ms. Count the effective lights (or draw
+   calls, or whatever the arm claims to change) and assert it differs between arms.

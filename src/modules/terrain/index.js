@@ -303,6 +303,15 @@ export async function init(ctx) {
     const on = p && p.view && p.terrain !== false ? 1 : 0;
     terrain.api.setInfoTint(on);
   });
+  /**
+   * The water reflection holds its last target while the camera is still (Water.js `maxFreeze`).
+   * Anything that changes layer-3 geometry has to cancel that hold, or a road laid — or a zone
+   * overlay toggled — while the camera sits still would be missing from the water until the cap
+   * expires. Building growth has no event of its own and is covered by the cap instead.
+   */
+  const dirtyReflection = () => { water._reflectDirty = true; };
+  for (const e of ['terrain:changed', 'roads:changed', 'zones:changed', 'services:changed',
+    'service:added', 'building:added', 'infoview:changed', 'weather:set']) events.on(e, dirtyReflection);
 
   // first LOD pass so the very first frame is correct, then pre-compile the programs (avoids a
   // multi-hundred-ms hitch on the first frame that shows terrain, water and the six tree kinds)

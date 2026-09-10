@@ -31,6 +31,8 @@ const _view = new THREE.Vector3();
 const _target = new THREE.Vector3();
 const _q = new THREE.Vector4();
 const _sizeVec = new THREE.Vector2();
+const _poseDir = new THREE.Vector3();
+const _posePos = new THREE.Vector3();
 const _clearColor = new THREE.Color();
 
 function heightTexture(grid) {
@@ -82,6 +84,26 @@ export class Water {
      */
     this.reflectionInterval = 2;
     this._reflectionFrame = 0;
+    /**
+     * A third gate: hold the last target while the camera is still.
+     *
+     * Everything on layer 3 is static architecture — terrain, roads, buildings, zone ground,
+     * trees. Traffic is not on it. So when the main camera has not moved, the pass re-renders a
+     * picture of the same geometry from the same place and produces an almost identical target.
+     * The exception is tree wind sway, which is why the hold is capped rather than indefinite:
+     * at the cap the reflected canopy still updates several times a second, seen at half
+     * resolution through the surface's own animated ripple normals.
+     *
+     * The cap is also what bounds the one staleness case there is no event for — a building
+     * finishing while the camera sits still. There is no `buildings:changed` on the bus (only
+     * roads/zones/terrain/services), so growth is covered by the cap alone: at the frame rates
+     * this runs at, 8 frames is well under half a second.
+     */
+    this.maxFreeze = 8;
+    this._freezeFrames = 0;
+    this._reflectDirty = true;
+    this._lastPosePos = new THREE.Vector3(Infinity, Infinity, Infinity);
+    this._lastPoseDir = new THREE.Vector3();
     this.reflectionRT = new THREE.WebGLRenderTarget(Math.max(256, Math.floor(size.x * reflectionScale)), Math.max(256, Math.floor(size.y * reflectionScale)), {
       type: THREE.HalfFloatType, depthBuffer: true, stencilBuffer: false, samples: 0,
     });
@@ -352,15 +374,35 @@ reflectedLight.indirectSpecular += uNightSheen * (0.16 + 0.84 * pow(1.0 - gWNdot
       this._reflectionFrame = 0; // render on the first frame water comes back into view
       return;
     }
+    // The resize is tested BEFORE either reuse gate: a canvas resize leaves the old target at the
+    // wrong aspect, and a gate that skipped past this would keep showing it for as long as it held.
+    const size = renderer.getDrawingBufferSize(_sizeVec);
+    const w = Math.max(256, Math.floor(size.x * this.reflectionScale)), h = Math.max(256, Math.floor(size.y * this.reflectionScale));
+    if (this.reflectionRT.width !== w || this.reflectionRT.height !== h) {
+      this.reflectionRT.setSize(w, h);
+      this._reflectDirty = true;
+    }
+
+    // Hold the last target while the camera is still (see `maxFreeze`). Deliberately does NOT
+    // touch `_reflectionFrame`: the two gates counting the same frames would beat against each
+    // other and could starve the pass entirely.
+    if (this.uniforms.uReflectionStrength.value > 0 && !this._reflectDirty && this._freezeFrames < this.maxFreeze) {
+      _posePos.setFromMatrixPosition(camera.matrixWorld);
+      camera.getWorldDirection(_poseDir);
+      // ~1 reflection texel of movement at this target size; below it nothing in the mirror moves
+      if (_posePos.distanceToSquared(this._lastPosePos) < 0.02 && _poseDir.dot(this._lastPoseDir) > 1 - 1e-6) {
+        this._freezeFrames++;
+        return;
+      }
+    }
+    this._freezeFrames = 0;
+    this._reflectDirty = false;
+
     // Reuse the last target in between. Never reuse one that was never rendered (strength is only
     // raised at the end of a successful pass), or water would appear with no reflection for a frame.
     if (this.reflectionInterval > 1
       && this.uniforms.uReflectionStrength.value > 0
       && (this._reflectionFrame++ % this.reflectionInterval) !== 0) return;
-
-    const size = renderer.getDrawingBufferSize(_sizeVec);
-    const w = Math.max(256, Math.floor(size.x * this.reflectionScale)), h = Math.max(256, Math.floor(size.y * this.reflectionScale));
-    if (this.reflectionRT.width !== w || this.reflectionRT.height !== h) this.reflectionRT.setSize(w, h);
 
     // mirror camera across the water plane (based on three's Reflector)
     _reflectorWorldPosition.set(0, this.waterLevel, 0);
@@ -434,6 +476,9 @@ reflectedLight.indirectSpecular += uNightSheen * (0.16 + 0.84 * pow(1.0 - gWNdot
     renderer.shadowMap.autoUpdate = prevShadowAuto;
     renderer.setRenderTarget(prevTarget);
     this.uniforms.uReflectionStrength.value = 1;
+    // the pose this target was rendered from — the freeze gate above compares against it
+    this._lastPosePos.setFromMatrixPosition(camera.matrixWorld);
+    camera.getWorldDirection(this._lastPoseDir);
     this.hasReflection = true;
   }
 

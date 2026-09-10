@@ -92,8 +92,8 @@ export class PropRenderer {
       const l = new THREE.SpotLight(0xffb877, 0, 46, 1.3, 0.35, 2);
       l.name = `props/lamp${i}`;
       l.castShadow = false;
-      // never toggled: three recompiles every lit material when the visible light count changes,
-      // so the pool stays in the scene from the first frame and idles at intensity 0
+      // Individual lights are never toggled — the whole GROUP is, once at dusk and once at dawn.
+      // See `_setPoolPresent`. Toggling them one at a time would recompile on every slot change.
       l.visible = true;
       l.position.set(0, -1000, 0);
       // three reads the cone direction from target.matrixWorld, so the target has to be in the graph
@@ -105,6 +105,73 @@ export class PropRenderer {
     ctx.scene.add(this.lightGroup);
     this.sources = [];
     this.lightTimer = 0;
+    /**
+     * Is the pool in the scene at all? A SpotLight at intensity 0 is NOT free: three compiles
+     * NUM_SPOT_LIGHTS into every lit material and runs the cone/attenuation maths per fragment
+     * whether the lamp is on or off. Measured on the demo city at 1080p/high, `city` preset, hour
+     * 14, with `--disable-gpu-vsync` and a `gl.finish()` per frame so the figure is real GPU time
+     * and not a vsync step, `?perfguard=0` so the guard cannot move a knob mid-run, and the arms
+     * run ABBA so any drift on a loaded machine cancels. Median of six windows each:
+     *
+     *     4 spot lights present   37.51 ms/frame      (26.7 fps)
+     *     pool taken out          32.25 ms/frame      (31.0 fps)   -5.26 ms, 14.0% of the frame
+     *
+     * The samples do not overlap (36.2-38.8 against 31.6-33.1). Two intermediate measurements said
+     * 0.1-0.7 ms and were wrong for a reason worth recording: once the gate below existed, it set
+     * `lightGroup.visible = false` every frame, so a harness that flipped the flag was comparing
+     * "off" against "off". Verifying it needs the effective light count asserted (4 against 0),
+     * not just the flag written.
+     *
+     * The sun is up for half of every 8-minute day (World.js `secondsPerHour`), and for all of it
+     * that 5.26 ms bought nothing — every lamp was at intensity 0. So the group leaves the scene
+     * when the sun is up and comes back at dusk.
+     *
+     * The constructor comment used to say this could never be done because the recompile costs
+     * "60 -> 9.5 fps". That is true exactly once. Measured: the FIRST toggle after the city is
+     * built stalls 1846 ms, the second costs 67 ms, because by then both the 0-light and 4-light
+     * program variants are in three's cache (412 programs either way). `_prewarmLightPrograms`
+     * pays that once during load, behind the loading screen, so every dusk and dawn afterwards is
+     * the 67 ms path — twice per 8-minute day, against 5.26 ms on every daylight frame.
+     */
+    this._poolPresent = true;
+    this._prewarmed = false;
+    if (ctx.events && !(ctx.config && ctx.config.headless)) {
+      // `game:ready` (main.js) fires once the world is built, which is what makes the compile
+      // representative — compiling an empty scene would cache the wrong programs.
+      this._offReady = ctx.events.on('game:ready', () => this._prewarmLightPrograms());
+    }
+  }
+
+  /**
+   * Compile both light-count variants of every lit material while the loading screen is still up.
+   * Skipped under `?headless=1` so tooling stays fast and deterministic.
+   */
+  _prewarmLightPrograms() {
+    if (this._prewarmed) return;
+    this._prewarmed = true;
+    const { renderer, scene, camera } = this.engine;
+    if (!renderer || !scene || !camera) return;
+    const was = this.lightGroup.visible;
+    try {
+      this.lightGroup.visible = false; renderer.compile(scene, camera);
+      this.lightGroup.visible = true; renderer.compile(scene, camera);
+    } catch (err) {
+      console.warn('[props] light program prewarm failed; first dusk will stutter once', err);
+    } finally {
+      this.lightGroup.visible = was;
+    }
+  }
+
+  /**
+   * Add or remove the whole pool. Two thresholds, not one: `nightFactor` crawls through the
+   * boundary at dawn and dusk, and a single test there would add and remove the pool on
+   * alternating frames — each flip a program-cache lookup and a full material refresh.
+   */
+  _setPoolPresent(nightFactor) {
+    const hasSources = this.sources.length > 0;
+    if (nightFactor > 0.015 && hasSources) this._poolPresent = true;
+    else if (nightFactor < 0.006 || !hasSources) this._poolPresent = false;
+    if (this.lightGroup.visible !== this._poolPresent) this.lightGroup.visible = this._poolPresent;
   }
 
   /** (Re)build the instanced meshes for every kind that has placements. */
@@ -275,6 +342,9 @@ export class PropRenderer {
    */
   updateLights(camera, nightFactor, dt) {
     if (!this.lights.length) return;
+    // take the pool out of the scene entirely while the sun is up — see `_setPoolPresent`
+    this._setPoolPresent(nightFactor);
+    if (!this._poolPresent) { this.stats.lights = 0; return; }
     const on = nightFactor > 0.015 && this.sources.length > 0;
     this.lightTimer -= dt;
     if (on && this.lightTimer <= 0) {
@@ -364,6 +434,7 @@ export class PropRenderer {
   }
 
   dispose() {
+    if (this._offReady) { this._offReady(); this._offReady = null; }
     this.clearMeshes();
     this.ctx.scene.remove(this.group);
     this.ctx.scene.remove(this.lightGroup);
