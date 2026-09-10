@@ -114,8 +114,43 @@ export const QUALITY = {
    *
    * To trade the budget back for shadow resolution, set this to 4. Nothing else depends on it.
    */
+  /**
+   * `pixelRatio` is 1.0, not 1.5, and this is the single largest performance decision in the file.
+   *
+   * `Engine.js` sets `min(window.devicePixelRatio, q.pixelRatio)`. On a non-Retina display that
+   * clamps to 1 and 1.5 never did anything. On the Apple Silicon laptop §3 names as the target it
+   * does NOT clamp: devicePixelRatio is 2, so a 1920x1080 canvas was allocating a 2880x1620 drawing
+   * buffer — 2.25x the pixels of the "@1080p" the budget is written against — and every per-pixel
+   * cost in the frame scales with it. Measured on the demo city, `city` preset, hour 14, an M1 Pro
+   * with vsync disabled and `gl.finish()` per frame, `?perfguard=0`, each arm a SEPARATE FRESH
+   * PAGE LOAD at devicePixelRatio 2 (the value below actually differed between the two runs):
+   *
+   *     pixelRatio 1.5   2880x1620   49.4 ms/frame   20.2 fps      <- as shipped
+   *     pixelRatio 1.0   1920x1080   30.2 ms/frame   33.1 fps      <- -19.2 ms, 39%
+   *
+   * Fresh loads, NOT a runtime `setPixelRatio` sweep. Toggling it live read 89.7 -> 47.5 ms
+   * and both arms were inflated: changing it reallocates every composer render target, and
+   * that churn lands inside the measurement window. An A/B arm that reallocates GPU memory
+   * has to be measured from a clean start or not at all.
+   *
+   * On a non-Retina display this changes nothing — `min()` already clamped 1.5 to 1 — so the
+   * frame there stays 30.1 ms. The entire win is Retina users no longer rendering 2.25x the
+   * pixels the budget is written against.
+   *
+   * Twenty fps is not a quality setting, and the thing it was buying is
+   * supersampling — which ARCHITECTURE §9 does not ask for anywhere. It asks for photographic
+   * materials, plausible shadows, atmospheric depth, night lighting, dense vegetation and subtle
+   * post. All of those survive at 1.0; SMAA is still in the chain and matters more here, not less.
+   *
+   * This also beats what `perfguard` would otherwise do. Left at 1.5 the guard sees a sustained
+   * miss and steps the WHOLE preset down (high -> medium), which costs density, shadow distance,
+   * texture size and cascade count as well. Capping the buffer keeps every one of those and gives
+   * up only the supersample.
+   *
+   * `ultra` still ships pixelRatio 2 — supersampling belongs there, on hardware chosen for it.
+   */
   high: {
-    name: 'high', pixelRatio: 1.5, shadowMapSize: 2048, cascades: 3, shadowDistance: 1400,
+    name: 'high', pixelRatio: 1.0, shadowMapSize: 2048, cascades: 3, shadowDistance: 1400,
     gtao: true, bloom: true, smaa: true, anisotropy: 16, drawDistance: 5000,
     density: 1.0, reflections: true, particles: 1.0, textureSize: 2048,
     propDensity: 1.0, lightBudget: 32,
